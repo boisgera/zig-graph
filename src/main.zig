@@ -16,8 +16,8 @@ pub fn main() !void {
     try graph.edges.put(.{ 1, 42 }, 2.0);
     try graph.edges.put(.{ 42, 666 }, 3.0);
 
-    // std.debug.print("{}\n", .{graph});
-
     const map = try graph.getMap(0);
-    _ = map;
+    // TODO: map display.
+    const pathinfo = map.get(666) orelse unreachable;
+    std.debug.print("{any} {any}\n", .{ pathinfo.path, pathinfo.total });
 }

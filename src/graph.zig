@@ -7,13 +7,64 @@ const allocator = gpa.allocator();
 
 const sec = 1_000_000_000;
 
+// TODO: can we infer K and V from the type of set?
+pub fn displaySet(comptime K: type, comptime V: type, set: std.AutoHashMap(K, V)) void {
+    var key_it = set.keyIterator();
+
+    while (key_it.next()) |key| {
+        std.debug.print("{}, ", .{key.*});
+    }
+    std.debug.print("\n", .{});
+}
+
+// All I want is a smart display for Path, I feel that this wrapping is
+// a bit too much. I could make a wrapper post-hoc, on the fly?
+pub fn Path(comptime Node: type) type {
+    return struct {
+        const Self = @This();
+        nodes: std.ArrayList(Node),
+
+        pub fn init(allocator_: std.mem.Allocator) Self {
+            return .{ .nodes = std.ArrayList(Node).init(allocator_) };
+        }
+
+        pub fn deinit(self: Self) void {
+            self.nodes.deinit();
+        }
+
+        pub fn clone(self: Self) !Self {
+            var other = Self.init(self.nodes.allocator);
+            other.nodes = try self.nodes.clone();
+            return other;
+        }
+
+        pub fn format(
+            self: Self,
+            comptime _: []const u8,
+            _: std.fmt.FormatOptions,
+            writer: anytype,
+        ) !void {
+            var first: bool = true;
+            try writer.print("(", .{});
+            for (self.nodes.items) |node| {
+                if (first) {
+                    try writer.print("{}", .{node});
+                    first = false;
+                } else {
+                    try writer.print(" -> {}", .{node});
+                }
+            }
+            try writer.print(")", .{});
+        }
+    };
+}
+
 pub fn Graph(comptime Node: type, comptime Weight: type) type {
     return struct {
         const Self = @This();
-        const Nodes = std.AutoArrayHashMap(Node, void);
+        const Nodes = std.AutoHashMap(Node, void);
         const Edge = struct { Node, Node };
-        const Edges = std.AutoArrayHashMap(Edge, Weight);
-        const Path = std.ArrayList(Node);
+        const Edges = std.AutoHashMap(Edge, Weight);
 
         nodes: Nodes,
         edges: Edges,
@@ -68,7 +119,7 @@ pub fn Graph(comptime Node: type, comptime Weight: type) type {
         }
 
         const PathInfo = struct {
-            path: Path,
+            path: Path(Node),
             total: Weight,
         };
 
@@ -79,8 +130,8 @@ pub fn Graph(comptime Node: type, comptime Weight: type) type {
 
             var todo = Map.init(allocator);
             defer todo.deinit();
-            var src_path = Path.init(allocator);
-            try src_path.append(src);
+            var src_path = Path(Node).init(allocator);
+            try src_path.nodes.append(src);
             try todo.put(src, .{
                 .path = src_path,
                 .total = 0,
@@ -92,7 +143,7 @@ pub fn Graph(comptime Node: type, comptime Weight: type) type {
                 std.debug.print("todo count: {}\n", .{todo.count()});
 
                 var min: Weight = 999999;
-                var min_path: Path = undefined;
+                var min_path: Path(Node) = undefined;
                 var min_neighbor: Node = undefined;
                 std.debug.print("min_node: {}\n", .{min_neighbor});
 
@@ -117,7 +168,7 @@ pub fn Graph(comptime Node: type, comptime Weight: type) type {
                                 min = total;
                                 min_neighbor = neighbor;
                                 min_path = try path_info.path.clone();
-                                try min_path.append(neighbor);
+                                try min_path.nodes.append(neighbor);
                             }
                         }
                     }
@@ -132,73 +183,39 @@ pub fn Graph(comptime Node: type, comptime Weight: type) type {
 
         fn transferIfDone(graph: Self, todo: *Map, done: *Map) !void {
             std.debug.print("transfer\n", .{});
-            // var it: @TypeOf(todo).Iterator = undefined; // does'nt work :(
-            var it = todo.iterator();
 
-            std.debug.print("    todo: ", .{});
-            it = todo.iterator();
-            while (it.next()) |node_pathinfo| {
-                const node = node_pathinfo.key_ptr.*;
-                const path_info = node_pathinfo.value_ptr.*;
-                _ = path_info;
-                std.debug.print("{}, ", .{node});
-            }
-            std.debug.print("\n", .{});
-            std.debug.print("    done: ", .{});
-            it = done.iterator();
-            while (it.next()) |node_pathinfo| {
-                const node = node_pathinfo.key_ptr.*;
-                const path_info = node_pathinfo.value_ptr.*;
-                _ = path_info;
-                std.debug.print("{}, ", .{node});
-            }
-            std.debug.print("\n", .{});
+            std.debug.print("todo: ", .{});
+            displaySet(Node, PathInfo, todo.*);
+            std.debug.print("done: ", .{});
+            displaySet(Node, PathInfo, done.*);
 
-            var todo_clone = todo.clone() catch std.debug.panic("OOM", .{});
-            while (todo_clone.count() > 0) {
-                var todo_it = todo.iterator();
-                const node_pathinfo = todo_it.next() orelse unreachable;
+            const todo_clone = todo.clone() catch std.debug.panic("OOM", .{});
+            var todo_clone_it = todo_clone.iterator();
+            while (todo_clone_it.next()) |node_pathinfo| {
                 const node = node_pathinfo.key_ptr.*;
                 const path_info = node_pathinfo.value_ptr.*;
 
-                var it_neighbors = graph.neighbors(node).iterator();
+                var it_neighbors = graph.neighbors(node).keyIterator();
                 var new_neighbor: ?Node = null;
-                while (it_neighbors.next()) |neighbor_void| {
-                    const n = neighbor_void.key_ptr.*;
+                while (it_neighbors.next()) |neighbor| {
+                    const n = neighbor.*;
                     if (!todo.contains(n) and !done.contains(n)) {
                         new_neighbor = n;
                         break;
                     }
                 }
 
-                // 🚧 TODO: print the node that has been considered and all others.
-                // Make a helper function.
-                assert(todo_clone.remove(node) == true); // 🪲
-                if (new_neighbor == null) {
+                if (new_neighbor == null) { // every neighbor already tracked
                     assert(todo.remove(node) == true);
                     assert(done.remove(node) == false);
                     try done.put(node, path_info);
                 }
             }
 
-            std.debug.print("    todo: ", .{});
-            it = todo.iterator();
-            while (it.next()) |node_pathinfo| {
-                const node = node_pathinfo.key_ptr.*;
-                const path_info = node_pathinfo.value_ptr.*;
-                _ = path_info;
-                std.debug.print("{}, ", .{node});
-            }
-            std.debug.print("\n", .{});
-            std.debug.print("    done: ", .{});
-            it = done.iterator();
-            while (it.next()) |node_pathinfo| {
-                const node = node_pathinfo.key_ptr.*;
-                const path_info = node_pathinfo.value_ptr.*;
-                _ = path_info;
-                std.debug.print("{}, ", .{node});
-            }
-            std.debug.print("\n", .{});
+            std.debug.print("todo: ", .{});
+            displaySet(Node, PathInfo, todo.*);
+            std.debug.print("done: ", .{});
+            displaySet(Node, PathInfo, done.*);
         }
     };
 }
